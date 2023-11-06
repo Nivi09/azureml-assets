@@ -798,8 +798,10 @@ class _WorkspaceConnectionTokenManager(_APITokenManager):
                 if connection.type != "azure_open_ai":
                     raise Exception(f"Received unexpected endpoint type {connection.type}"
                                     "only Azure Open AI endpoints are supported at this time")
-
-                self.api_version = connection.metadata["ApiVersion"]
+                api_version = "2023-07-01-preview"
+                if hasattr(connection.metadata, "ApiVersion"):
+                    api_version = connection.metadata["ApiVersion"]
+                self.api_version = api_version
                 self.domain_name = connection.target
                 self.token = connection.credentials["key"]
             else:
@@ -998,9 +1000,11 @@ class _HTTPClientWithRetry:
 
         retry_strategy = Retry(
             total=n_retry,
+            status=n_retry,
             status_forcelist=[104, 408, 409, 424, 429, 500, 502, 503, 504],
             backoff_factor=backoff_factor,
             respect_retry_after_header=True,
+            allowed_methods=frozenset(['GET', 'POST', 'PUT']),
         )
         adapter = HTTPAdapter(max_retries=retry_strategy)
         self.client = requests.Session()
@@ -1167,7 +1171,7 @@ def _request_prompt_batch(
     azure_endpoint_domain_name: str,
     azure_openai_api_version: str,
     request_error_rate_threshold: float = 0.5,
-    api_call_retry_backoff_factor: int = 3,
+    api_call_retry_backoff_factor: int = 4,
     api_call_retry_max_count: int = 3,
     **kwargs,
 ) -> List[_Job]:
@@ -1416,7 +1420,7 @@ def run():
         help="Fail if the running error rate for the endpoint requests "
         "raises above this threshold.",
     )
-    parser.add_argument("--api_call_retry_backoff_factor", type=int, default=3)
+    parser.add_argument("--api_call_retry_backoff_factor", type=int, default=4)
     parser.add_argument("--api_call_retry_max_count", type=int, default=10)
     parser.add_argument("--histogram", type=str, required=True)
     parser.add_argument("--samples_index", type=str, required=True)
@@ -1555,12 +1559,18 @@ def apply_annotation(
     if SIMILARITY in metric_names and ground_truth_column_name not in production_df.columns:
         raise ValueError(f"production_dataset must have column: {ground_truth_column_name}")
 
+    # rename columns to prompt, completion, context, ground truth to match metaprompt data
+    production_df = (production_df.withColumnRenamed(prompt_column_name, PROMPT)
+                     .withColumnRenamed(completion_column_name, COMPLETION)
+                     .withColumnRenamed(context_column_name, CONTEXT)
+                     .withColumnRenamed(ground_truth_column_name, GROUND_TRUTH))
+
     annotation_requirements = {
-        GROUNDEDNESS: [prompt_column_name, completion_column_name, context_column_name],
-        RELEVANCE: [prompt_column_name, completion_column_name, context_column_name],
-        FLUENCY: [prompt_column_name, completion_column_name],
-        COHERENCE: [prompt_column_name, completion_column_name],
-        SIMILARITY: [prompt_column_name, completion_column_name, ground_truth_column_name]
+        GROUNDEDNESS: [PROMPT, COMPLETION, CONTEXT],
+        RELEVANCE: [PROMPT, COMPLETION, CONTEXT],
+        FLUENCY: [PROMPT, COMPLETION],
+        COHERENCE: [PROMPT, COMPLETION],
+        SIMILARITY: [PROMPT, COMPLETION, GROUND_TRUTH]
     }
     # Sampling
     production_df_sampled = production_df.sample(withReplacement=False, fraction=sample_rate)

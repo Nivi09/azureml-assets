@@ -15,6 +15,8 @@ from azureml.core.model import Model
 from peft import __version__ as peft_version
 from peft.utils import CONFIG_NAME as PEFT_ADAPTER_CONFIG_FILE_NAME
 
+from register_presets_model import registermodel_entrypoint
+
 from azureml.core import Workspace
 from azureml.core.run import Run, _OfflineRun
 
@@ -22,6 +24,10 @@ from azureml.acft.common_components import get_logger_app, set_logging_parameter
 from azureml.acft.contrib.hf import VERSION, PROJECT_NAME
 from azureml.acft.contrib.hf.nlp.constants.constants import LOGS_TO_BE_FILTERED_IN_APPINSIGHTS
 from azureml.acft.accelerator.utils.code_utils import update_json_file_and_overwrite
+
+from azureml.acft.common_components.utils.error_handling.swallow_all_exceptions_decorator import (
+    swallow_all_exceptions,
+)
 
 
 logger = get_logger_app("azureml.acft.contrib.hf.scripts.components.scripts.register_model.register_model")
@@ -69,7 +75,7 @@ def parse_args():
     parser.add_argument(
         "--model_type",
         type=str,
-        default=Model.Framework.CUSTOM,
+        default="PRESETS",
         choices=SUPPORTED_MODEL_ASSET_TYPES,
         help="Type of model you want to register",
     )
@@ -190,7 +196,7 @@ def get_properties(finetune_args_path: str) -> Dict[str, str]:
         properties[property_key] = finetune_args_dict.get(finetune_args_key, None)
         if "baseModelId" == property_key:
             properties[property_key] = "/".join(properties[property_key].split('/')[:-2])
-            properties["baseweightsId"] = properties[property_key].split("/")[-1]
+            properties["baseWeightsId"] = properties[property_key].split("/")[-1]
 
     # fixed properties
     additional_properties = {
@@ -203,8 +209,43 @@ def get_properties(finetune_args_path: str) -> Dict[str, str]:
     return properties
 
 
+def register_custom_model(
+    workspace, model_path, model_name, model_type, model_description, tags, properties, registration_details_folder
+):
+    """Register the model in custom format."""
+    # register the model using SDKV1
+    model = Model.register(
+        workspace=workspace,
+        model_path=model_path,  # where the model was copied to in output
+        model_name=model_name,
+        model_framework=model_type,
+        description=model_description,
+        tags=tags,
+        properties=properties
+    )
+    logger.info(f"Registering model {model.name} with version {model.version}.")
+    logger.info(f"Model registered. AssetID : {model.id}")
+
+    # save the model info
+    model_info = {
+        "id": model.id,
+        "name": model.name,
+        "version": model.version,
+        "type": model.model_framework,
+        "properties": model.properties,
+        "tags": model.tags,
+        "description": model.description,
+    }
+    json_object = json.dumps(model_info, indent=4)
+    registration_file = registration_details_folder / REGISTRATION_DETAILS_JSON_FILE
+
+    with open(registration_file, "w+") as outfile:
+        outfile.write(json_object)
+    logger.info("Saved model registration details in output json file.")
+
+
 def register_model(args: Namespace):
-    """Run main function for sdkv1."""
+    """Run main function."""
     model_name = args.model_name
     model_type = args.model_type
     registration_details_folder = args.registration_details_folder
@@ -223,42 +264,32 @@ def register_model(args: Namespace):
         logger.info(f"Updated model_name = {model_name}")
 
     st = time.time()
-    model = Model.register(
-        workspace=ws,
-        model_path=registration_details_folder,  # where the model was copied to in output
-        model_name=model_name,
-        model_framework=model_type,
-        description=model_description,
-        tags=tags,
-        properties=properties
-    )
+    if Model.Framework.CUSTOM == model_type:
+        register_custom_model(
+            workspace=ws,
+            model_path=registration_details_folder,
+            model_name=model_name,
+            model_type=Model.Framework.CUSTOM,
+            model_description=model_description,
+            tags=tags,
+            properties=properties,
+            registration_details_folder=registration_details_folder
+        )
+    elif "PRESETS" == model_type:
+        registermodel_entrypoint(
+            model_name=model_name,
+            registered_model_output=str(registration_details_folder),
+            registered_model_version=None,
+            properties=properties
+        )
+
     time_to_register = time.time() - st
     logger.info(f"Time to register: {time_to_register} seconds")
 
-    # register the model in workspace or registry
-    logger.info(f"Registering model {model.name} with version {model.version}.")
-    logger.info(f"Model registered. AssetID : {model.id}")
-    # Registered model information
-    model_info = {
-        "id": model.id,
-        "name": model.name,
-        "version": model.version,
-        "type": model.model_framework,
-        "properties": model.properties,
-        "tags": model.tags,
-        "description": model.description,
-    }
-    json_object = json.dumps(model_info, indent=4)
 
-    registration_file = registration_details_folder / REGISTRATION_DETAILS_JSON_FILE
-
-    with open(registration_file, "w+") as outfile:
-        outfile.write(json_object)
-    logger.info("Saved model registration details in output json file.")
-
-
-# run script
-if __name__ == "__main__":
+@swallow_all_exceptions(time_delay=60)
+def main():
+    """Main run function."""
     args = parse_args()
 
     set_logging_parameters(
@@ -287,3 +318,8 @@ if __name__ == "__main__":
 
     # register model
     register_model(args)
+
+
+# run script
+if __name__ == "__main__":
+    main()
