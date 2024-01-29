@@ -16,7 +16,7 @@ except ImportError:
 
 from custom_model_configurations.base_configuration_builder import ModelConfigurationBuilder
 from constants import EngineName, TaskType
-from custom_model_configurations.output_schema import (
+from custom_model_configurations.schema_output import (
     ImageTaskInferenceResult,
     TextToImageSchema,
 )
@@ -134,7 +134,7 @@ class DiffusionConfigurationBuilder(ModelConfigurationBuilder):
         # Triton kernel supported on only 7.0+ GPUs. V100 is 7.0
         model_config.load_with_sys_mem = False  # Not supported for diffusers
         model_config.task = self._task
-        model_config.model_path = self.model_path
+        model_config.model_path = self.MLFLOW_MODEL_PATH
         if get_gpu_device_capability() <= 7.0:
             model_config.replace_with_kernel_inject = False
             model_config.meta_tensor = True
